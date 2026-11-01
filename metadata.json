@@ -1,0 +1,6 @@
+{
+  "name": "Excel Morph - 智慧表格格式轉換器",
+  "description": "將任意格式的 Excel A 自動轉換為符合標準規範的 Excel B。支援 AI 欄位語意對齊、字串合併拆分、公式運算、多範本儲存與一鍵批量下載。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
