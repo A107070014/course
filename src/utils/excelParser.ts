@@ -20,10 +20,24 @@ function normalizeHeader(str: any): string {
     .toLowerCase();
 }
 
+// 統一黑色框線標準定義 (Solid Black Borders)
+const BLACK_CELL_BORDER: Partial<ExcelJS.Borders> = {
+  top: { style: 'thin', color: { argb: 'FF000000' } },
+  left: { style: 'thin', color: { argb: 'FF000000' } },
+  bottom: { style: 'thin', color: { argb: 'FF000000' } },
+  right: { style: 'thin', color: { argb: 'FF000000' } },
+};
+
+const BLACK_HEADER_BORDER: Partial<ExcelJS.Borders> = {
+  top: { style: 'thin', color: { argb: 'FF000000' } },
+  left: { style: 'thin', color: { argb: 'FF000000' } },
+  bottom: { style: 'medium', color: { argb: 'FF000000' } },
+  right: { style: 'thin', color: { argb: 'FF000000' } },
+};
+
 /**
- * Parse an uploaded File (XLSX, XLS, CSV) into structured ExcelSheetData.
- * Strictly adheres to standard Excel architecture: Row 1 is the table header (headerRowIndex = 0).
- * Stores the raw binary ArrayBuffer for 100% pixel-perfect template style replication upon export.
+ * 100% 純前端 Excel 解析函式（無需任何後端）
+ * 規範：第 1 列嚴格為表格 Header，由 ExcelJS 負責樣式與二進位緩衝區操作。
  */
 export async function parseExcelFile(
   file: File,
@@ -32,7 +46,7 @@ export async function parseExcelFile(
 ): Promise<ExcelSheetData> {
   let buffer = await file.arrayBuffer();
 
-  // Read via SheetJS for fast data extraction and multi-format compatibility
+  // Read via SheetJS for fast multi-format table extraction
   const workbook = XLSX.read(buffer, {
     type: 'array',
     cellDates: true,
@@ -53,7 +67,6 @@ export async function parseExcelFile(
   }
 
   // If the uploaded file is .xls or .csv, convert to a real .xlsx ArrayBuffer
-  // so ExcelJS can load it seamlessly with full style engine support
   const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
   if (!isXlsx) {
     try {
@@ -85,17 +98,15 @@ export async function parseExcelFile(
     };
   }
 
-  // Row 1 is ALWAYS the table header (index 0), unless user explicitly chooses another row
+  // 第 1 列嚴格為 Header（索引 0）
   const headerRowIndex = forcedHeaderRowIndex !== undefined ? forcedHeaderRowIndex : 0;
 
-  // Headers from detected header row
   const rawHeaders = (jsonData[headerRowIndex] || []).map((h, idx) =>
     h !== undefined && h !== null && String(h).trim() !== ''
       ? String(h).trim()
       : `未命名欄位_${idx + 1}`
   );
 
-  // Subsequent rows are data records
   const rows: Record<string, any>[] = [];
   for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
     const rowValues = jsonData[i] || [];
@@ -112,7 +123,7 @@ export async function parseExcelFile(
     rows.push(rowObj);
   }
 
-  // Inspect styles in depth using ExcelJS
+  // 利用 ExcelJS 深層檢視樣式
   let detectedStyles: ExcelSheetData['detectedStyles'] = undefined;
   try {
     const inspectWb = new ExcelJS.Workbook();
@@ -135,7 +146,6 @@ export async function parseExcelFile(
         headerFontColor = col.argb ? `#${col.argb.slice(-6)}` : '';
       }
 
-      // Check sample rows and zebra striping
       const sample1 = ws.getRow(headerRowIndex + 2);
       const sample2 = ws.getRow(headerRowIndex + 3);
       const hasZebra =
@@ -154,7 +164,7 @@ export async function parseExcelFile(
       };
     }
   } catch (err) {
-    console.warn('ExcelJS style inspection notice:', err);
+    console.warn('ExcelJS inspection non-fatal notice:', err);
   }
 
   return {
@@ -171,9 +181,6 @@ export async function parseExcelFile(
   };
 }
 
-/**
- * Format raw cell values cleanly
- */
 function formatCellValue(val: any): any {
   if (val === null || val === undefined) return '';
   if (val instanceof Date) {
@@ -191,12 +198,10 @@ function formatCellValue(val: any): any {
 }
 
 /**
- * Export transformed data to a downloadable .xlsx file with 100% template style preservation.
- * Row 1 is strictly preserved as the template header row.
- * Rows 2..N are filled with converted data, inheriting:
- * - Exact Header row styling (background colors, fonts, borders, heights, alignments)
- * - Sample data row styling (font, borders, alternating zebra striping, currency/date number formats numFmt)
- * - Original column widths, sheet names, gridline views, and freeze panes
+ * 100% 純前端 ExcelJS 匯出引擎：
+ * 1. 外框線與內部框線一律為黑色 (Thin/Medium Black Borders FF000000)
+ * 2. 第 1 列 Header 的字體一律為粗體字 (Bold: true)
+ * 3. 第 2 列起依序填入轉換資料，完整繼承原範本樣式與數字幣別/日期格式
  */
 export async function exportToXLSXWithTemplate(
   headers: string[],
@@ -208,17 +213,34 @@ export async function exportToXLSXWithTemplate(
 
   if (templateData && templateData.rawBuffer) {
     try {
-      // 1. Load the original Excel B template workbook from buffer
+      // 1. 載入 Excel B 範本
       await wb.xlsx.load(templateData.rawBuffer.slice(0));
       const ws = wb.getWorksheet(templateData.activeSheet) || wb.worksheets[0];
 
       if (ws) {
-        // Row 1 is the header row
+        // 第 1 列為表頭
         const headerRowNumber = 1;
         const headerRow = ws.getRow(headerRowNumber);
         const colCount = Math.max(ws.columnCount, headers.length);
 
-        // Map template columns by column index & text
+        // 強制設定第一列 Header：粗體字 (bold: true) + 黑色框線 (black borders)
+        headerRow.height = Math.max(headerRow.height || 28, 28);
+        for (let c = 1; c <= colCount; c++) {
+          const hCell = headerRow.getCell(c);
+          hCell.font = {
+            ...(hCell.font || { name: 'Microsoft JhengHei', size: 11 }),
+            bold: true, // 使用者指定：第 1 列 Header 字體必須為粗體字
+          };
+          hCell.border = {
+            top: { style: 'thin', color: { argb: 'FF000000' } },
+            left: { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: { style: 'medium', color: { argb: 'FF000000' } }, // 表頭底部黑線
+            right: { style: 'thin', color: { argb: 'FF000000' } },
+          };
+        }
+        headerRow.commit();
+
+        // 收集欄位資訊
         const templateCols: { colIndex: number; text: string; normalized: string }[] = [];
         for (let c = 1; c <= colCount; c++) {
           const cell = headerRow.getCell(c);
@@ -230,7 +252,7 @@ export async function exportToXLSXWithTemplate(
           });
         }
 
-        // Capture sample data row styles (Row 2, Row 3 if present)
+        // 擷取範例列樣式（第 2 列，以及若有第 3 列的斑馬紋）
         interface CellStyleSnapshot {
           font?: any;
           fill?: any;
@@ -245,11 +267,9 @@ export async function exportToXLSXWithTemplate(
         }
 
         const sampleStyles: RowStyleSnapshot[] = [];
-
-        // Check if Row 2 exists and has styling
         const sampleRowNumbers = [2];
         if (ws.rowCount >= 3 && ws.getRow(3).actualCellCount > 0) {
-          sampleRowNumbers.push(3); // Capture zebra striping if Row 3 exists
+          sampleRowNumbers.push(3);
         }
 
         sampleRowNumbers.forEach((rNum) => {
@@ -261,7 +281,13 @@ export async function exportToXLSXWithTemplate(
             cells[colIndex] = {
               font: deepClone(cell.font),
               fill: deepClone(cell.fill),
-              border: deepClone(cell.border),
+              // 外框線強制為黑色
+              border: {
+                top: { style: 'thin', color: { argb: 'FF000000' } },
+                left: { style: 'thin', color: { argb: 'FF000000' } },
+                bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                right: { style: 'thin', color: { argb: 'FF000000' } },
+              },
               alignment: deepClone(cell.alignment),
               numFmt: cell.numFmt,
               protection: deepClone(cell.protection),
@@ -274,24 +300,24 @@ export async function exportToXLSXWithTemplate(
           });
         });
 
-        // If template had NO sample data rows at Row 2, derive elegant styling from Row 1
+        // 若原範本完全沒有第 2 列，則基於第 1 列建立預設資料列樣式
         if (sampleStyles.length === 0 || !sampleStyles[0].cells[1]?.font) {
           const cells: Record<number, CellStyleSnapshot> = {};
           templateCols.forEach(({ colIndex }) => {
             cells[colIndex] = {
               font: { name: headerRow.getCell(colIndex).font?.name || '微軟正黑體', size: 10 },
               border: {
-                top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-                bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-                left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-                right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+                top: { style: 'thin', color: { argb: 'FF000000' } },
+                left: { style: 'thin', color: { argb: 'FF000000' } },
+                bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                right: { style: 'thin', color: { argb: 'FF000000' } },
               },
             };
           });
           sampleStyles.push({ height: 22, cells });
         }
 
-        // Fill converted data rows starting at Row 2 (leaving Row 1 untouched)
+        // 第 2 列起依序填入轉換資料
         rows.forEach((rowObj, rIdx) => {
           const rowNumber = 2 + rIdx;
           const targetRow = ws.getRow(rowNumber);
@@ -304,19 +330,16 @@ export async function exportToXLSXWithTemplate(
           templateCols.forEach(({ colIndex, text, normalized }) => {
             const cell = targetRow.getCell(colIndex);
 
-            // Find matching data value from rowObj
             let val: any = undefined;
             if (rowObj[text] !== undefined) {
               val = rowObj[text];
             } else {
-              // Try normalized match
               const matchKey = Object.keys(rowObj).find(
                 (k) => normalizeHeader(k) === normalized
               );
               if (matchKey && rowObj[matchKey] !== undefined) {
                 val = rowObj[matchKey];
               } else if (headers[colIndex - 1] && rowObj[headers[colIndex - 1]] !== undefined) {
-                // Fallback to positional column index
                 val = rowObj[headers[colIndex - 1]];
               }
             }
@@ -324,7 +347,6 @@ export async function exportToXLSXWithTemplate(
             const style = stylePattern.cells[colIndex];
             const strVal = val !== undefined && val !== null ? String(val).trim() : '';
 
-            // Check if this column should be numeric
             const isNumeric =
               strVal !== '' &&
               /^-?\d+(\.\d+)?$/.test(strVal) &&
@@ -336,11 +358,17 @@ export async function exportToXLSXWithTemplate(
               cell.value = strVal;
             }
 
-            // Apply 100% clone of the template sample row's styles
+            // 套用字體、底色、黑色外框線與數值格式
             if (style) {
               if (style.font) cell.font = deepClone(style.font);
               if (style.fill) cell.fill = deepClone(style.fill);
-              if (style.border) cell.border = deepClone(style.border);
+              // 強制套用黑色外框線
+              cell.border = {
+                top: { style: 'thin', color: { argb: 'FF000000' } },
+                left: { style: 'thin', color: { argb: 'FF000000' } },
+                bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                right: { style: 'thin', color: { argb: 'FF000000' } },
+              };
               if (style.alignment) {
                 cell.alignment = deepClone(style.alignment);
               } else {
@@ -353,19 +381,27 @@ export async function exportToXLSXWithTemplate(
               } else if (isNumeric) {
                 cell.numFmt = '#,##0';
               }
+            } else {
+              cell.font = { name: 'Microsoft JhengHei', size: 10 };
+              cell.border = {
+                top: { style: 'thin', color: { argb: 'FF000000' } },
+                left: { style: 'thin', color: { argb: 'FF000000' } },
+                bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                right: { style: 'thin', color: { argb: 'FF000000' } },
+              };
             }
           });
 
           targetRow.commit();
         });
 
-        // Clean up any extra leftover sample rows from the template
+        // 清理原範本多餘的未填列
         const expectedRowCount = 1 + rows.length;
         if (ws.rowCount > expectedRowCount) {
           ws.spliceRows(expectedRowCount + 1, ws.rowCount - expectedRowCount);
         }
 
-        // Write output buffer and trigger browser download
+        // 下載 Excel 檔案
         const outBuffer = await wb.xlsx.writeBuffer();
         triggerDownload(
           outBuffer,
@@ -375,14 +411,15 @@ export async function exportToXLSXWithTemplate(
         return;
       }
     } catch (err) {
-      console.warn('Advanced template cloning failed, falling back to styled generator:', err);
+      console.warn('ExcelJS template cloning failed, using styled fallback:', err);
     }
   }
 
-  // Fallback: If no template buffer, create a pristine professional styled sheet
+  // Fallback: 純前端 ExcelJS 生成標準企業樣式
   const ws = wb.addWorksheet('轉換結果');
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
 
-  // Add Header Row with rich corporate styling
+  // 第 1 列 Header：粗體字 (bold: true) + 黑色外框線 (black border)
   const headerRow = ws.addRow(headers);
   headerRow.height = 28;
   headerRow.eachCell((cell) => {
@@ -394,7 +431,7 @@ export async function exportToXLSXWithTemplate(
     cell.font = {
       name: 'Microsoft JhengHei',
       size: 11,
-      bold: true,
+      bold: true, // 粗體字
       color: { argb: 'FFFFFFFF' },
     };
     cell.alignment = {
@@ -402,14 +439,14 @@ export async function exportToXLSXWithTemplate(
       horizontal: 'center',
     };
     cell.border = {
-      top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-      bottom: { style: 'medium', color: { argb: 'FF0F172A' } },
-      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'medium', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } },
     };
   });
 
-  // Add Data Rows with zebra striping and borders
+  // 資料列：黑色外框線
   rows.forEach((row, rIdx) => {
     const rowValues = headers.map((h) => {
       const val = row[h];
@@ -440,10 +477,10 @@ export async function exportToXLSXWithTemplate(
         fgColor: { argb: isEven ? 'FFFFFFFF' : 'FFF8FAFC' },
       };
       cell.border = {
-        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-        right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        top: { style: 'thin', color: { argb: 'FF000000' } },
+        left: { style: 'thin', color: { argb: 'FF000000' } },
+        bottom: { style: 'thin', color: { argb: 'FF000000' } },
+        right: { style: 'thin', color: { argb: 'FF000000' } },
       };
 
       if (typeof cell.value === 'number') {
@@ -454,7 +491,7 @@ export async function exportToXLSXWithTemplate(
     });
   });
 
-  // Auto-fit column widths
+  // 自動欄寬
   ws.columns.forEach((column, colIdx) => {
     const headerName = headers[colIdx] || '';
     let maxLen = headerName.length * 2.2;
@@ -473,21 +510,14 @@ export async function exportToXLSXWithTemplate(
   );
 }
 
-/**
- * Backward compatibility alias for exportToXLSX
- */
 export async function exportToXLSX(
   headers: string[],
   rows: Record<string, any>[],
-  filename = 'excel_b_converted.xlsx',
-  sheetName = '轉換結果'
+  filename = 'excel_b_converted.xlsx'
 ) {
   return exportToXLSXWithTemplate(headers, rows, null, filename);
 }
 
-/**
- * Trigger file download in browser
- */
 function triggerDownload(buffer: ExcelJS.Buffer, filename: string, mimeType: string) {
   const blob = new Blob([buffer], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -500,9 +530,6 @@ function triggerDownload(buffer: ExcelJS.Buffer, filename: string, mimeType: str
   URL.revokeObjectURL(url);
 }
 
-/**
- * Export transformed data to CSV with UTF-8 BOM
- */
 export function exportToCSV(
   headers: string[],
   rows: Record<string, any>[],
@@ -530,11 +557,9 @@ export function exportToCSV(
 }
 
 /**
- * Generate a real, beautifully styled ExcelJS workbook buffer for sample B.
- * STRICT SPECIFICATION:
- * - ROW 1 IS THE TABLE HEADER (with Indigo background, bold white text, custom column widths)
- * - ROW 2 IS SAMPLE ROW 1 (with Currency $#,##0, Date yyyy-mm-dd, clean borders)
- * - ROW 3 IS SAMPLE ROW 2 (with subtle zebra striping #F8FAFC)
+ * 產生高品質範本 Excel B（純 ExcelJS 生成）
+ * 1. 第 1 列為表頭：粗體字 (bold: true) + 黑色外框線 (Black border)
+ * 2. 第 2、3 列為範例資料列：黑色外框線 + 幣別 $#,##0 與日期 yyyy-mm-dd
  */
 export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
   const wb = new ExcelJS.Workbook();
@@ -554,10 +579,9 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
     '處理狀態',
   ];
 
-  // Specific custom column widths
   const widths = [16, 14, 16, 42, 30, 18, 14, 16, 14];
 
-  // ROW 1: Table Header Row
+  // 第 1 列：表頭（粗體字 + 黑色框線）
   const headerRow = ws.getRow(1);
   headerRow.height = 30;
   headerRow.values = headers;
@@ -565,29 +589,32 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
     cell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FF1F4E79' }, // Professional Indigo-Navy
+      fgColor: { argb: 'FF1F4E79' },
     };
     cell.font = {
       name: 'Microsoft JhengHei',
       size: 11,
-      bold: true,
+      bold: true, // 粗體字
       color: { argb: 'FFFFFFFF' },
     };
     cell.alignment = {
       vertical: 'middle',
       horizontal: 'center',
     };
+    // 黑色外框線
     cell.border = {
-      top: { style: 'thin', color: { argb: 'FF0F2D4A' } },
-      left: { style: 'thin', color: { argb: 'FF2D6094' } },
-      bottom: { style: 'medium', color: { argb: 'FF0F2D4A' } },
-      right: { style: 'thin', color: { argb: 'FF2D6094' } },
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'medium', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } },
     };
     ws.getColumn(colNum).width = widths[colNum - 1] || 18;
   });
 
-  // ROW 2: Add Sample Row 1
-  const sampleValues1 = [
+  // 第 2 列：範例資料 1（黑色框線）
+  const sampleRow1 = ws.getRow(2);
+  sampleRow1.height = 24;
+  sampleRow1.values = [
     'TC-8801',
     '林冠宇',
     '0912-345-678',
@@ -598,18 +625,15 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
     '2026-04-10',
     '待分揀',
   ];
-
-  const sampleRow1 = ws.getRow(2);
-  sampleRow1.height = 24;
-  sampleRow1.values = sampleValues1;
   sampleRow1.eachCell((cell, colNum) => {
-    cell.font = { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF0F172A' } };
+    cell.font = { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF000000' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+    // 黑色外框線
     cell.border = {
-      top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-      left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-      bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-      right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } },
     };
     if (colNum === 6) {
       cell.numFmt = '$#,##0';
@@ -624,8 +648,10 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
     }
   });
 
-  // ROW 3: Add Sample Row 2 (Zebra striping #F8FAFC)
-  const sampleValues2 = [
+  // 第 3 列：範例資料 2（斑馬紋 + 黑色框線）
+  const sampleRow2 = ws.getRow(3);
+  sampleRow2.height = 24;
+  sampleRow2.values = [
     'TC-8802',
     '陳雅婷',
     '0928-876-543',
@@ -636,18 +662,15 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
     '2026-04-10',
     '待分揀',
   ];
-
-  const sampleRow2 = ws.getRow(3);
-  sampleRow2.height = 24;
-  sampleRow2.values = sampleValues2;
   sampleRow2.eachCell((cell, colNum) => {
-    cell.font = { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF0F172A' } };
+    cell.font = { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF000000' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+    // 黑色外框線
     cell.border = {
-      top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-      left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-      bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-      right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } },
     };
     if (colNum === 6) {
       cell.numFmt = '$#,##0';
@@ -666,9 +689,6 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
   return buffer as ArrayBuffer;
 }
 
-/**
- * Pre-packaged realistic sample datasets for instant testing
- */
 export function getDemoSampleDatasets(): {
   sampleA: ExcelSheetData;
   sampleB: ExcelSheetData;
@@ -788,9 +808,9 @@ export function getDemoSampleDatasets(): {
       headers: sampleBHeaders,
       rows: sampleBRows,
       totalRows: sampleBRows.length,
-      headerRowIndex: 0, // ROW 1 IS THE TABLE HEADER
+      headerRowIndex: 0,
       detectedStyles: {
-        headerRowNumber: 1, // ROW 1 IS THE TABLE HEADER
+        headerRowNumber: 1,
         headerBgColor: '#1F4E79',
         headerFontColor: '#FFFFFF',
         fontName: '微軟正黑體',
