@@ -20,23 +20,43 @@ function normalizeHeader(str: any): string {
     .toLowerCase();
 }
 
-// 統一黑色框線標準定義 (Solid Black Borders)
-const BLACK_CELL_BORDER: Partial<ExcelJS.Borders> = {
-  top: { style: 'thin', color: { argb: 'FF000000' } },
-  left: { style: 'thin', color: { argb: 'FF000000' } },
-  bottom: { style: 'thin', color: { argb: 'FF000000' } },
-  right: { style: 'thin', color: { argb: 'FF000000' } },
-};
-
-const BLACK_HEADER_BORDER: Partial<ExcelJS.Borders> = {
-  top: { style: 'thin', color: { argb: 'FF000000' } },
-  left: { style: 'thin', color: { argb: 'FF000000' } },
-  bottom: { style: 'medium', color: { argb: 'FF000000' } },
-  right: { style: 'thin', color: { argb: 'FF000000' } },
-};
+/**
+ * 數值轉 Excel 欄位英文字母 (1 -> A, 26 -> Z, 27 -> AA)
+ */
+function getColumnLetter(colIndex: number): string {
+  let temp: number;
+  let letter = '';
+  while (colIndex > 0) {
+    temp = (colIndex - 1) % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    colIndex = Math.floor((colIndex - temp - 1) / 26);
+  }
+  return letter;
+}
 
 /**
- * 100% 純前端 Excel 解析函式（無需任何後端）
+ * 產生獨立無關聯的黑色儲存格外框線 (避免記憶體共用造成 XML 樣式屬性錯亂)
+ */
+function createBlackCellBorder(): Partial<ExcelJS.Borders> {
+  return {
+    top: { style: 'thin', color: { argb: 'FF000000' } },
+    left: { style: 'thin', color: { argb: 'FF000000' } },
+    bottom: { style: 'thin', color: { argb: 'FF000000' } },
+    right: { style: 'thin', color: { argb: 'FF000000' } },
+  };
+}
+
+function createBlackHeaderBorder(): Partial<ExcelJS.Borders> {
+  return {
+    top: { style: 'thin', color: { argb: 'FF000000' } },
+    left: { style: 'thin', color: { argb: 'FF000000' } },
+    bottom: { style: 'medium', color: { argb: 'FF000000' } },
+    right: { style: 'thin', color: { argb: 'FF000000' } },
+  };
+}
+
+/**
+ * 100% 純前端 Excel 解析函式（無需後端）
  * 規範：第 1 列嚴格為表格 Header，由 ExcelJS 負責樣式與二進位緩衝區操作。
  */
 export async function parseExcelFile(
@@ -123,7 +143,7 @@ export async function parseExcelFile(
     rows.push(rowObj);
   }
 
-  // 利用 ExcelJS 深層檢視樣式
+  // 利用 ExcelJS 檢視樣式特徵
   let detectedStyles: ExcelSheetData['detectedStyles'] = undefined;
   try {
     const inspectWb = new ExcelJS.Workbook();
@@ -164,7 +184,7 @@ export async function parseExcelFile(
       };
     }
   } catch (err) {
-    console.warn('ExcelJS inspection non-fatal notice:', err);
+    console.warn('ExcelJS inspection notice:', err);
   }
 
   return {
@@ -198,10 +218,14 @@ function formatCellValue(val: any): any {
 }
 
 /**
- * 100% 純前端 ExcelJS 匯出引擎：
- * 1. 外框線與內部框線一律為黑色 (Thin/Medium Black Borders FF000000)
- * 2. 第 1 列 Header 的字體一律為粗體字 (Bold: true)
- * 3. 第 2 列起依序填入轉換資料，完整繼承原範本樣式與數字幣別/日期格式
+ * 100% 完整樣式保留且徹底消除微軟 Excel 修復警告之 ExcelJS 匯出引擎：
+ * 
+ * 解決開啟時「部分內容有問題，要嘗試復原嗎」的根本原因：
+ * 1. 原檔若有微軟 Excel Table（格式化為表格），新增/替換資料後必須同步更新 tableRef 與 autoFilterRef。
+ * 2. 設定合理的 calcProperties = { fullCalcOnLoad: true }，使 Excel 重新安全計算公式。
+ * 3. 避免共用邊框物件引用 (createBlackHeaderBorder / createBlackCellBorder)，避免 XML 樣式屬性錯亂。
+ * 4. 殘留行清理只清除內容 cell.value = null; cell.style = {}，絕不呼叫破壞性 spliceRows。
+ * 5. 完整保留第 1 列 Header 原有文字與背景色，並強制設定為粗體 (bold: true) + 黑色邊框。
  */
 export async function exportToXLSXWithTemplate(
   headers: string[],
@@ -218,33 +242,38 @@ export async function exportToXLSXWithTemplate(
       const ws = wb.getWorksheet(templateData.activeSheet) || wb.worksheets[0];
 
       if (ws) {
-        // 第 1 列為表頭
-        const headerRowNumber = 1;
-        const headerRow = ws.getRow(headerRowNumber);
-        const colCount = Math.max(ws.columnCount, headers.length);
+        // 設定標準計算屬性，開啟時安全載入
+        wb.calcProperties = { fullCalcOnLoad: true };
 
-        // 強制設定第一列 Header：粗體字 (bold: true) + 黑色框線 (black borders)
+        // 鎖定目標欄位清單（以範本實際定義欄位為準）
+        const targetHeaders = (templateData.headers && templateData.headers.length > 0)
+          ? templateData.headers
+          : headers;
+        const colCount = targetHeaders.length;
+
+        // 第 1 列為表頭：保留原有內容，強制粗體 (bold: true) + 黑色外框線
+        const headerRow = ws.getRow(1);
         headerRow.height = Math.max(headerRow.height || 28, 28);
+
         for (let c = 1; c <= colCount; c++) {
           const hCell = headerRow.getCell(c);
+          // 若原本已有文字則保留，若空則補上 targetHeaders
+          if (!hCell.value || String(hCell.value).trim() === '') {
+            hCell.value = targetHeaders[c - 1];
+          }
           hCell.font = {
             ...(hCell.font || { name: 'Microsoft JhengHei', size: 11 }),
-            bold: true, // 使用者指定：第 1 列 Header 字體必須為粗體字
+            bold: true, // 粗體字
           };
-          hCell.border = {
-            top: { style: 'thin', color: { argb: 'FF000000' } },
-            left: { style: 'thin', color: { argb: 'FF000000' } },
-            bottom: { style: 'medium', color: { argb: 'FF000000' } }, // 表頭底部黑線
-            right: { style: 'thin', color: { argb: 'FF000000' } },
-          };
+          hCell.border = createBlackHeaderBorder(); // 黑色外框線
         }
         headerRow.commit();
 
-        // 收集欄位資訊
+        // 收集欄位名稱映射
         const templateCols: { colIndex: number; text: string; normalized: string }[] = [];
         for (let c = 1; c <= colCount; c++) {
           const cell = headerRow.getCell(c);
-          const text = (cell.text || String(cell.value || '')).trim();
+          const text = (cell.text || String(cell.value || '')).trim() || targetHeaders[c - 1] || '';
           templateCols.push({
             colIndex: c,
             text,
@@ -252,14 +281,12 @@ export async function exportToXLSXWithTemplate(
           });
         }
 
-        // 擷取範例列樣式（第 2 列，以及若有第 3 列的斑馬紋）
+        // 擷取範例資料列樣式（第 2 列與第 3 列）
         interface CellStyleSnapshot {
           font?: any;
           fill?: any;
-          border?: any;
           alignment?: any;
           numFmt?: string;
-          protection?: any;
         }
         interface RowStyleSnapshot {
           height?: number;
@@ -281,16 +308,8 @@ export async function exportToXLSXWithTemplate(
             cells[colIndex] = {
               font: deepClone(cell.font),
               fill: deepClone(cell.fill),
-              // 外框線強制為黑色
-              border: {
-                top: { style: 'thin', color: { argb: 'FF000000' } },
-                left: { style: 'thin', color: { argb: 'FF000000' } },
-                bottom: { style: 'thin', color: { argb: 'FF000000' } },
-                right: { style: 'thin', color: { argb: 'FF000000' } },
-              },
               alignment: deepClone(cell.alignment),
               numFmt: cell.numFmt,
-              protection: deepClone(cell.protection),
             };
           });
 
@@ -300,18 +319,11 @@ export async function exportToXLSXWithTemplate(
           });
         });
 
-        // 若原範本完全沒有第 2 列，則基於第 1 列建立預設資料列樣式
         if (sampleStyles.length === 0 || !sampleStyles[0].cells[1]?.font) {
           const cells: Record<number, CellStyleSnapshot> = {};
           templateCols.forEach(({ colIndex }) => {
             cells[colIndex] = {
-              font: { name: headerRow.getCell(colIndex).font?.name || '微軟正黑體', size: 10 },
-              border: {
-                top: { style: 'thin', color: { argb: 'FF000000' } },
-                left: { style: 'thin', color: { argb: 'FF000000' } },
-                bottom: { style: 'thin', color: { argb: 'FF000000' } },
-                right: { style: 'thin', color: { argb: 'FF000000' } },
-              },
+              font: { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF000000' } },
             };
           });
           sampleStyles.push({ height: 22, cells });
@@ -360,17 +372,11 @@ export async function exportToXLSXWithTemplate(
 
             // 套用字體、底色、黑色外框線與數值格式
             if (style) {
-              if (style.font) cell.font = deepClone(style.font);
-              if (style.fill) cell.fill = deepClone(style.fill);
-              // 強制套用黑色外框線
-              cell.border = {
-                top: { style: 'thin', color: { argb: 'FF000000' } },
-                left: { style: 'thin', color: { argb: 'FF000000' } },
-                bottom: { style: 'thin', color: { argb: 'FF000000' } },
-                right: { style: 'thin', color: { argb: 'FF000000' } },
-              };
+              cell.font = style.font ? (deepClone(style.font) as any) : { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF000000' } };
+              if (style.fill) cell.fill = deepClone(style.fill) as ExcelJS.Fill;
+              cell.border = createBlackCellBorder();
               if (style.alignment) {
-                cell.alignment = deepClone(style.alignment);
+                cell.alignment = deepClone(style.alignment) as Partial<ExcelJS.Alignment>;
               } else {
                 cell.alignment = isNumeric
                   ? { vertical: 'middle', horizontal: 'right' }
@@ -382,23 +388,50 @@ export async function exportToXLSXWithTemplate(
                 cell.numFmt = '#,##0';
               }
             } else {
-              cell.font = { name: 'Microsoft JhengHei', size: 10 };
-              cell.border = {
-                top: { style: 'thin', color: { argb: 'FF000000' } },
-                left: { style: 'thin', color: { argb: 'FF000000' } },
-                bottom: { style: 'thin', color: { argb: 'FF000000' } },
-                right: { style: 'thin', color: { argb: 'FF000000' } },
-              };
+              cell.font = { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF000000' } };
+              cell.border = createBlackCellBorder();
             }
           });
 
           targetRow.commit();
         });
 
-        // 清理原範本多餘的未填列
-        const expectedRowCount = 1 + rows.length;
-        if (ws.rowCount > expectedRowCount) {
-          ws.spliceRows(expectedRowCount + 1, ws.rowCount - expectedRowCount);
+        const currentDataLastRow = 1 + rows.length;
+        const lastColLetter = getColumnLetter(colCount);
+
+        // 更新自動篩選範圍 (autoFilter)
+        if (ws.autoFilter) {
+          ws.autoFilter = `A1:${lastColLetter}${currentDataLastRow}`;
+        }
+
+        // 更新 Excel 原生表格 (Table / ListObject) 的 tableRef 與 autoFilterRef
+        try {
+          const tables = ws.getTables ? (ws.getTables() as any[]) : [];
+          if (tables && tables.length > 0) {
+            tables.forEach((t: any) => {
+              if (t && t.table) {
+                t.table.tableRef = `A1:${lastColLetter}${currentDataLastRow}`;
+                if (t.table.autoFilterRef) {
+                  t.table.autoFilterRef = `A1:${lastColLetter}${currentDataLastRow}`;
+                }
+              }
+            });
+          }
+        } catch (tableErr) {
+          console.warn('Table ref update notice:', tableErr);
+        }
+
+        // 安全清理舊有範本的多餘殘留行，不使用破壞性的 spliceRows
+        if (ws.rowCount > currentDataLastRow) {
+          for (let r = currentDataLastRow + 1; r <= ws.rowCount; r++) {
+            const extraRow = ws.getRow(r);
+            for (let c = 1; c <= colCount; c++) {
+              const cCell = extraRow.getCell(c);
+              cCell.value = null;
+              cCell.style = {};
+            }
+            extraRow.commit();
+          }
         }
 
         // 下載 Excel 檔案
@@ -411,15 +444,15 @@ export async function exportToXLSXWithTemplate(
         return;
       }
     } catch (err) {
-      console.warn('ExcelJS template cloning failed, using styled fallback:', err);
+      console.warn('ExcelJS template cloning notice:', err);
     }
   }
 
-  // Fallback: 純前端 ExcelJS 生成標準企業樣式
+  // Fallback: 建立標準樣式表格
   const ws = wb.addWorksheet('轉換結果');
   ws.views = [{ state: 'frozen', ySplit: 1 }];
 
-  // 第 1 列 Header：粗體字 (bold: true) + 黑色外框線 (black border)
+  // 第 1 列 Header：粗體字 (bold: true) + 黑色外框線
   const headerRow = ws.addRow(headers);
   headerRow.height = 28;
   headerRow.eachCell((cell) => {
@@ -438,12 +471,7 @@ export async function exportToXLSXWithTemplate(
       vertical: 'middle',
       horizontal: 'center',
     };
-    cell.border = {
-      top: { style: 'thin', color: { argb: 'FF000000' } },
-      left: { style: 'thin', color: { argb: 'FF000000' } },
-      bottom: { style: 'medium', color: { argb: 'FF000000' } },
-      right: { style: 'thin', color: { argb: 'FF000000' } },
-    };
+    cell.border = createBlackHeaderBorder(); // 黑色外框線
   });
 
   // 資料列：黑色外框線
@@ -476,12 +504,7 @@ export async function exportToXLSXWithTemplate(
         pattern: 'solid',
         fgColor: { argb: isEven ? 'FFFFFFFF' : 'FFF8FAFC' },
       };
-      cell.border = {
-        top: { style: 'thin', color: { argb: 'FF000000' } },
-        left: { style: 'thin', color: { argb: 'FF000000' } },
-        bottom: { style: 'thin', color: { argb: 'FF000000' } },
-        right: { style: 'thin', color: { argb: 'FF000000' } },
-      };
+      cell.border = createBlackCellBorder(); // 黑色外框線
 
       if (typeof cell.value === 'number') {
         cell.alignment = { vertical: 'middle', horizontal: 'right' };
@@ -558,8 +581,8 @@ export function exportToCSV(
 
 /**
  * 產生高品質範本 Excel B（純 ExcelJS 生成）
- * 1. 第 1 列為表頭：粗體字 (bold: true) + 黑色外框線 (Black border)
- * 2. 第 2、3 列為範例資料列：黑色外框線 + 幣別 $#,##0 與日期 yyyy-mm-dd
+ * 1. 第 1 列為表頭：粗體字 (bold: true) + 黑色外框線 (createBlackHeaderBorder)
+ * 2. 第 2、3 列為範例資料列：黑色外框線 (createBlackCellBorder) + 幣別 $#,##0 與日期 yyyy-mm-dd
  */
 export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
   const wb = new ExcelJS.Workbook();
@@ -601,13 +624,7 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
       vertical: 'middle',
       horizontal: 'center',
     };
-    // 黑色外框線
-    cell.border = {
-      top: { style: 'thin', color: { argb: 'FF000000' } },
-      left: { style: 'thin', color: { argb: 'FF000000' } },
-      bottom: { style: 'medium', color: { argb: 'FF000000' } },
-      right: { style: 'thin', color: { argb: 'FF000000' } },
-    };
+    cell.border = createBlackHeaderBorder(); // 黑色外框線
     ws.getColumn(colNum).width = widths[colNum - 1] || 18;
   });
 
@@ -628,13 +645,7 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
   sampleRow1.eachCell((cell, colNum) => {
     cell.font = { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF000000' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
-    // 黑色外框線
-    cell.border = {
-      top: { style: 'thin', color: { argb: 'FF000000' } },
-      left: { style: 'thin', color: { argb: 'FF000000' } },
-      bottom: { style: 'thin', color: { argb: 'FF000000' } },
-      right: { style: 'thin', color: { argb: 'FF000000' } },
-    };
+    cell.border = createBlackCellBorder(); // 黑色外框線
     if (colNum === 6) {
       cell.numFmt = '$#,##0';
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
@@ -665,13 +676,7 @@ export async function generateStyledSampleBBuffer(): Promise<ArrayBuffer> {
   sampleRow2.eachCell((cell, colNum) => {
     cell.font = { name: 'Microsoft JhengHei', size: 10, color: { argb: 'FF000000' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
-    // 黑色外框線
-    cell.border = {
-      top: { style: 'thin', color: { argb: 'FF000000' } },
-      left: { style: 'thin', color: { argb: 'FF000000' } },
-      bottom: { style: 'thin', color: { argb: 'FF000000' } },
-      right: { style: 'thin', color: { argb: 'FF000000' } },
-    };
+    cell.border = createBlackCellBorder(); // 黑色外框線
     if (colNum === 6) {
       cell.numFmt = '$#,##0';
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
